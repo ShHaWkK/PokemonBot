@@ -3,7 +3,7 @@ import { registerCommands } from "./discord/commands";
 import { seedIfNeeded } from "./persistence/seed";
 import { db } from "./persistence/db";
 
-import { findOrCreateUser, setStarter, addPokemon, setScreenMessageId, addDexSeen, addDexCaught, adjustInventory, getInventory, inTransaction } from "./persistence/repo";
+import { findOrCreateUser, setStarter, addPokemon, setScreenMessageId, addDexSeen, addDexCaught, adjustInventory, getInventory, inTransaction, canAccessZone } from "./persistence/repo";
 import { recordRequest } from "./persistence/idempotency";
 import { DISCORD_TOKEN, GUILD_ID } from "./lib/config";
 import { buildScreen } from "./renderer/ScreenRenderer";
@@ -128,8 +128,13 @@ async function handleButton(interaction: ButtonInteraction) {
     return;
   }
   const parsed = parseId(interaction.customId);
-  if (parsed.action === "explore") {
-    const encounter = randomEncounter(2);
+  if (parsed.scene === "Exploration" && parsed.action === "explore") {
+    const zoneId = parsed.data ? Number(parsed.data) : 2;
+    if (!canAccessZone(user.id, zoneId)) {
+      await interaction.reply({ content: "Zone verrouillée. Niveau insuffisant.", ephemeral: true });
+      return;
+    }
+    const encounter = randomEncounter(zoneId);
     addDexSeen(user.id, encounter.speciesId, false);
     await interaction.reply({ content: `Rencontre: ${encounter.name}`, ephemeral: true });
     const channel = interaction.channel as TextChannel;
@@ -150,10 +155,34 @@ async function handleButton(interaction: ButtonInteraction) {
         new ButtonBuilder().setCustomId(`cap:${encounter.speciesId}:${encounter.level}:3`).setLabel(`Hyper Ball (${hasUltra})`).setStyle(ButtonStyle.Danger).setDisabled(hasUltra <= 0)
       )
     ]});
-  } else if (parsed.action === "repousse") {
+  } else if (parsed.scene === "Exploration" && parsed.action === "repousse") {
     await interaction.reply({ content: "Repousse activé/désactivé", ephemeral: true });
-  } else if (parsed.action === "info") {
-    await interaction.reply({ content: "Infos de la zone: Route 1, rencontres basiques", ephemeral: true });
+  } else if (parsed.scene === "Exploration" && parsed.action === "info") {
+    const zoneId = parsed.data ? Number(parsed.data) : 2;
+    const z = db.prepare("SELECT name, biome, rules_json FROM zones WHERE id = ?").get(zoneId) as { name:string; biome:string; rules_json:string } | undefined;
+    const rules = z?.rules_json ? JSON.parse(z.rules_json) as Record<string, unknown> : {};
+    const min = typeof (rules as any).levelMin === "number" ? (rules as any).levelMin : 1;
+    await interaction.reply({ content: z ? `${z.name} (${z.biome}) • Niveau min ${min}` : "Zone inconnue", ephemeral: true });
+  } else if (parsed.scene === "Exploration" && parsed.action === "zones") {
+    const zones = db.prepare("SELECT id, name FROM zones ORDER BY id").all() as { id:number; name:string }[];
+    const rows = [];
+    for (let i = 0; i < zones.length; i += 4) {
+      const slice = zones.slice(i, i + 4);
+      const row = new ActionRowBuilder<ButtonBuilder>();
+      for (const z of slice) {
+        row.addComponents(new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Exploration", action: "zone", data: String(z.id) })).setLabel(z.name).setStyle(ButtonStyle.Secondary));
+      }
+      rows.push(row);
+    }
+    await interaction.reply({ content: "Choisissez une zone", ephemeral: true, components: rows });
+  } else if (parsed.scene === "Exploration" && parsed.action === "zone") {
+    const zoneId = Number(parsed.data);
+    if (!canAccessZone(user.id, zoneId)) {
+      await interaction.reply({ content: "Zone verrouillée. Niveau insuffisant.", ephemeral: true });
+      return;
+    }
+    const msg = await ensureScreenMessage(interaction, user.id, discordUserId, { scene: "Exploration", zoneId });
+    await interaction.reply({ content: "Zone sélectionnée", ephemeral: true });
   } else if (parsed.action === "soigner") {
     await interaction.reply({ content: "Centre Pokémon: vos Pokémon sont soignés", ephemeral: true });
   } else if (parsed.scene === "Equipe" && parsed.action === "details") {
@@ -249,16 +278,31 @@ async function handleButton(interaction: ButtonInteraction) {
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "1" })).setLabel("Jadielle").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "2" })).setLabel("Argenta").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "3" })).setLabel("Carmin").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "3" })).setLabel("Azuria").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "4" })).setLabel("Carmin").setStyle(ButtonStyle.Success)
+      ),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "5" })).setLabel("Céladopole").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "6" })).setLabel("Safrania").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "7" })).setLabel("Parmanie").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "8" })).setLabel("Cramois’Île").setStyle(ButtonStyle.Success)
       )
     ]});
   } else if (parsed.scene === "Arenes" && parsed.action === "arena") {
     const gymId = Number(parsed.data);
+    const badges = countBadges(user.id);
+    if (badges < gymId - 1) {
+      await interaction.reply({ content: "Arène verrouillée. Obtenez le badge précédent.", ephemeral: true });
+      return;
+    }
     const battleId = createGymBattle(user.id, gymId);
     const b = getBattle(battleId)!;
     const msg = await ensureScreenMessage(interaction, user.id, discordUserId, { scene: "Battle", zoneId: 2 });
     await msg.edit(buildBattle(discordUserId, b));
-    await interaction.reply({ content: "Combat d'arène engagé", ephemeral: true });
+    const gym = db.prepare("SELECT name, rules_json FROM gyms WHERE id = ?").get(gymId) as { name:string; rules_json:string };
+    const rules = gym.rules_json ? JSON.parse(gym.rules_json) as Record<string, unknown> : {};
+    const intro = typeof (rules as any).intro === "string" ? (rules as any).intro : "Leader prêt au combat.";
+    await interaction.reply({ content: `${gym.name} • ${intro}`, ephemeral: true });
   } else if (parsed.scene === "Quetes" && parsed.action === "suivre") {
     const last = lastAudit(user.id, "raid_start");
     if (last && Date.now() - new Date(last.created_at).getTime() < 24 * 60 * 60 * 1000) {
@@ -283,8 +327,11 @@ async function handleButton(interaction: ButtonInteraction) {
     if (res.ended) {
       if (b.type === "gym") {
         adjustInventory(user.id, 1, 2);
-        awardBadge(user.id, 1);
-        await interaction.reply({ content: "Victoire d'arène. Badge obtenu + Poké Ball x2", ephemeral: true });
+        const badgeId = (b.rewards && typeof (b.rewards as any).badgeId === "number") ? (b.rewards as any).badgeId as number : 1;
+        awardBadge(user.id, badgeId);
+        const icons: Record<number, string> = { 1: "https://i.imgur.com/7g1Badge.png", 2: "https://i.imgur.com/2c2Badge.png", 3: "https://i.imgur.com/3f3Badge.png", 4: "https://i.imgur.com/4p4Badge.png", 5: "https://i.imgur.com/5a5Badge.png", 6: "https://i.imgur.com/6m6Badge.png", 7: "https://i.imgur.com/7v7Badge.png", 8: "https://i.imgur.com/8t8Badge.png" };
+        const embed = { embeds: [{ title: `Badge obtenu`, description: `Badge #${badgeId}`, thumbnail: { url: icons[badgeId] || "https://i.imgur.com/default.png" } }] };
+        await interaction.reply({ content: `Victoire d'arène. Poké Ball x2`, ephemeral: true, ...embed });
       } else {
         const inv = getInventory(user.id);
         const hasHyper = inv.find(i => i.item_id === 3)?.quantity || 0;
@@ -329,8 +376,18 @@ async function handleButton(interaction: ButtonInteraction) {
     if (potion <= 0) {
       await interaction.reply({ content: "Aucune potion", ephemeral: true });
     } else {
-      adjustInventory(user.id, 10, -1);
       const b = getBattle(battleId)!;
+      if (b.type === "gym") {
+        const gymId = (b.rewards && typeof (b.rewards as any).gymId === "number") ? (b.rewards as any).gymId as number : 0;
+        const gym = db.prepare("SELECT rules_json FROM gyms WHERE id = ?").get(gymId) as { rules_json:string } | undefined;
+        const rules = gym?.rules_json ? JSON.parse(gym.rules_json) as Record<string, unknown> : {};
+        const allowed = (rules as any).allowedItems !== false;
+        if (!allowed) {
+          await interaction.reply({ content: "Objets interdits dans cette arène", ephemeral: true });
+          return;
+        }
+      }
+      adjustInventory(user.id, 10, -1);
       const p = b.participants.playerTeam[b.participants.playerActive];
       p.hp = Math.min(p.maxHp, p.hp + 20);
       db.prepare("UPDATE battles SET participants_json = ? WHERE id = ?").run(JSON.stringify(b.participants), battleId);

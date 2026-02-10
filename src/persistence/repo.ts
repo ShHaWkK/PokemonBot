@@ -99,3 +99,11 @@ export function setSetting(userId: number, key: string, value: unknown) {
   (current as any)[key] = value;
   db.prepare("UPDATE users SET settings_json = ? WHERE id = ?").run(JSON.stringify(current), userId);
 }
+export function canAccessZone(userId: number, zoneId: number): boolean {
+  const z = db.prepare("SELECT rules_json FROM zones WHERE id = ?").get(zoneId) as { rules_json: string } | undefined;
+  const rules = z?.rules_json ? JSON.parse(z.rules_json) as Record<string, unknown> : {};
+  const min = typeof (rules as any).levelMin === "number" ? (rules as any).levelMin : 1;
+  const team = db.prepare("SELECT level FROM pokemon_instances WHERE owner_user_id = ? AND in_team_slot IS NOT NULL").all(userId) as { level:number }[];
+  const highest = team.length ? Math.max(...team.map(t => t.level)) : 1;
+  return highest >= min;
+}

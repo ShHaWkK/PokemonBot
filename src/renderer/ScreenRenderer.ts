@@ -29,9 +29,10 @@ function buildContextRow(state: UserScreenState) {
   const row = new ActionRowBuilder<ButtonBuilder>();
   if (state.activeScene === "Exploration") {
     row.addComponents(
-      new ButtonBuilder().setCustomId(makeId(state.userId, { scene: "Exploration", action: "explore" })).setLabel("Explorer").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(makeId(state.userId, { scene: "Exploration", action: "explore", data: String(state.zoneId) })).setLabel("Explorer").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(makeId(state.userId, { scene: "Exploration", action: "repousse" })).setLabel("Repousse ON/OFF").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(makeId(state.userId, { scene: "Exploration", action: "info" })).setLabel("Infos Zone").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(makeId(state.userId, { scene: "Exploration", action: "info" })).setLabel("Infos Zone").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(makeId(state.userId, { scene: "Exploration", action: "zones" })).setLabel("Choisir zone").setStyle(ButtonStyle.Secondary)
     );
   } else if (state.activeScene === "Equipe") {
     row.addComponents(
