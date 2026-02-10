@@ -1,7 +1,15 @@
 import Database from "better-sqlite3";
-import { DATABASE_PATH } from "../lib/config";
+import { DATABASE_PATH, NODE_ENV } from "../lib/config";
+import fs from "fs";
+import path from "path";
 export type DB = Database.Database;
-export const db = new Database(DATABASE_PATH);
+if (DATABASE_PATH !== ":memory:") {
+  const dir = path.dirname(DATABASE_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+export const db = new Database(NODE_ENV === "test" ? ":memory:" : DATABASE_PATH);
 
 
 db.pragma("journal_mode = WAL");

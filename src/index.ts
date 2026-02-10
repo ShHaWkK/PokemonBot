@@ -13,9 +13,11 @@ import { randomEncounter } from "./game/spawn";
 import { captureChance, attemptCapture } from "./game/capture";
 import { parseId } from "./discord/ids";
 import { SceneName } from "./scenes/types";
-import { createGymBattle, createRaidBattle, getBattle, performAttack, megaEvolve } from "./game/battle";
+import { createGymBattle, createRaidBattle, getBattle, performAttack, megaEvolve, switchActive } from "./game/battle";
 import { buildBattle } from "./renderer/BattleRenderer";
 import { logAudit, lastAudit } from "./persistence/audit";
+import { awardBadge, countBadges } from "./persistence/badges";
+import { getSettings, setSetting } from "./persistence/repo";
 
 
 
@@ -84,7 +86,14 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
     await ensureScreenMessage(interaction, user.id, discordUserId, { scene: "Exploration", zoneId: 2 });
     await interaction.editReply({ content: "Écran prêt" });
   } else if (interaction.commandName === "settings") {
-    await interaction.reply({ content: "Paramètres indisponibles pour l'instant", ephemeral: true });
+    await interaction.reply({ content: "Réglez vos préférences", ephemeral: true, components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId("set:anim:on").setLabel("Animations ON").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("set:anim:off").setLabel("Animations OFF").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("set:acc:on").setLabel("Accessibilité ON").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("set:acc:off").setLabel("Accessibilité OFF").setStyle(ButtonStyle.Secondary)
+      )
+    ]});
   } else if (interaction.commandName === "redeem") {
     await interaction.reply({ content: "Code non reconnu", ephemeral: true });
   } else if (interaction.commandName === "help") {
@@ -117,7 +126,9 @@ async function handleButton(interaction: ButtonInteraction) {
     const channel = interaction.channel as TextChannel;
     const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
     if (userRow.screen_message_id) {
-      await runCapture(client, channel.id, userRow.screen_message_id, encounter.name);
+      const settings = getSettings(user.id);
+      const anim = (settings as any).animations !== false;
+      if (anim) await runCapture(client, channel.id, userRow.screen_message_id, encounter.name);
     }
     const inv = getInventory(user.id);
     const hasPokeball = inv.find(i => i.item_id === 1)?.quantity || 0;
@@ -163,6 +174,34 @@ async function handleButton(interaction: ButtonInteraction) {
       adjustInventory(user.id, 1, 1);
       await interaction.reply({ content: "Achat: Poké Ball +1", ephemeral: true });
     }
+  } else if (parsed.scene === "Shop" && parsed.action === "categorie") {
+    const badges = countBadges(user.id);
+    const hasKeystone = getInventory(user.id).find(i => i.item_id === 30)?.quantity || 0;
+    const raidWin = !!lastAudit(user.id, "raid_win");
+    if (!hasKeystone || (badges < 1 && !raidWin)) {
+      await interaction.reply({ content: "Mega Stones indisponibles. Obtenez un badge ou gagnez un raid et la Keystone.", ephemeral: true });
+    } else {
+      await interaction.reply({ content: "Mega Stones", ephemeral: true, components: [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder().setCustomId("shop:mega:34").setLabel("Venusaurite").setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId("shop:mega:31").setLabel("Charizardite X").setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId("shop:mega:32").setLabel("Charizardite Y").setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId("shop:mega:33").setLabel("Blastoisinite").setStyle(ButtonStyle.Primary)
+        )
+      ]});
+    }
+  } else if (interaction.customId.startsWith("shop:mega:")) {
+    const itemId = Number(interaction.customId.split(":")[2]);
+    const price = 0;
+    const badges = countBadges(user.id);
+    const raidWin = !!lastAudit(user.id, "raid_win");
+    const hasKeystone = getInventory(user.id).find(i => i.item_id === 30)?.quantity || 0;
+    if (!hasKeystone || (badges < 1 && !raidWin)) {
+      await interaction.reply({ content: "Conditions non remplies", ephemeral: true });
+      return;
+    }
+    adjustInventory(user.id, itemId, 1);
+    await interaction.reply({ content: "Mega Stone ajoutée", ephemeral: true });
   } else if (parsed.scene === "Arenes" && parsed.action === "defier") {
     const battleId = createGymBattle(user.id, 1);
     const b = getBattle(battleId)!;
@@ -185,7 +224,8 @@ async function handleButton(interaction: ButtonInteraction) {
     }
   } else if (parsed.scene === "Battle" && parsed.action?.startsWith("atk")) {
     const battleId = Number(parsed.data);
-    const res = performAttack(battleId, "player", 1);
+    const idx = parsed.action === "atk1" ? 0 : parsed.action === "atk2" ? 1 : parsed.action === "atk3" ? 2 : 3;
+    const res = performAttack(battleId, "player", idx);
     const b = getBattle(battleId)!;
     const channel = interaction.channel as TextChannel;
     const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
@@ -194,10 +234,13 @@ async function handleButton(interaction: ButtonInteraction) {
     if (res.ended) {
       if (b.type === "gym") {
         adjustInventory(user.id, 1, 2);
-        await interaction.reply({ content: "Victoire d'arène. Récompense: Poké Ball x2", ephemeral: true });
+        awardBadge(user.id, 1);
+        await interaction.reply({ content: "Victoire d'arène. Badge obtenu + Poké Ball x2", ephemeral: true });
       } else {
         const inv = getInventory(user.id);
         const hasHyper = inv.find(i => i.item_id === 3)?.quantity || 0;
+        logAudit(user.id, "raid_win", "battle", battleId, interaction.id, {}, true);
+        adjustInventory(user.id, 30, 1);
         await interaction.reply({ content: "Raid gagné. Essai de capture disponible", ephemeral: true });
         await interaction.followUp({ ephemeral: true, content: "Choisissez une balle", components: [
           new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -226,7 +269,8 @@ async function handleButton(interaction: ButtonInteraction) {
     const channel = interaction.channel as TextChannel;
     const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
     const msg = await channel.messages.fetch(userRow.screen_message_id!);
-    await runMegaEvolution(client, channel.id, msg.id, b.participants.player.name);
+    const activeName = b.participants.playerTeam[b.participants.playerActive].name;
+    await runMegaEvolution(client, channel.id, msg.id, activeName);
     await msg.edit(buildBattle(discordUserId, getBattle(battleId)!));
     await interaction.reply({ content: "Méga-Évolution activée", ephemeral: true });
   } else if (parsed.scene === "Battle" && parsed.action === "objet") {
@@ -238,7 +282,8 @@ async function handleButton(interaction: ButtonInteraction) {
     } else {
       adjustInventory(user.id, 10, -1);
       const b = getBattle(battleId)!;
-      b.participants.player.hp = Math.min(b.participants.player.maxHp, b.participants.player.hp + 20);
+      const p = b.participants.playerTeam[b.participants.playerActive];
+      p.hp = Math.min(p.maxHp, p.hp + 20);
       db.prepare("UPDATE battles SET participants_json = ? WHERE id = ?").run(JSON.stringify(b.participants), battleId);
       const channel = interaction.channel as TextChannel;
       const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
@@ -246,6 +291,26 @@ async function handleButton(interaction: ButtonInteraction) {
       await msg.edit(buildBattle(discordUserId, getBattle(battleId)!));
       await interaction.reply({ content: "Potion utilisée", ephemeral: true });
     }
+  } else if (parsed.scene === "Battle" && parsed.action === "changer") {
+    const battleId = Number(parsed.data);
+    const b = getBattle(battleId)!;
+    const team = b.participants.playerTeam;
+    const row = new ActionRowBuilder<ButtonBuilder>();
+    for (let i = 0; i < team.length; i++) {
+      row.addComponents(new ButtonBuilder().setCustomId(`swp:${battleId}:${i}`).setLabel(`#${i + 1} ${team[i].name}`).setStyle(ButtonStyle.Secondary).setDisabled(i === b.participants.playerActive || team[i].hp === 0));
+    }
+    await interaction.reply({ content: "Choisissez un Pokémon", ephemeral: true, components: [row] });
+  } else if (interaction.customId.startsWith("swp:")) {
+    const [, battleIdStr, slotStr] = interaction.customId.split(":");
+    const battleId = Number(battleIdStr);
+    const slotIndex = Number(slotStr);
+    const ok = switchActive(battleId, "player", slotIndex);
+    const b = getBattle(battleId)!;
+    const channel = interaction.channel as TextChannel;
+    const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+    const msg = await channel.messages.fetch(userRow.screen_message_id!);
+    await msg.edit(buildBattle(discordUserId, b));
+    await interaction.reply({ content: ok ? "Changement effectué" : "Changement impossible", ephemeral: true });
   } else if (parsed.scene === "Battle" && parsed.action === "fuir") {
     const battleId = Number(parsed.data);
     db.prepare("UPDATE battles SET state = ? WHERE id = ?").run("ended", battleId);
@@ -292,6 +357,17 @@ async function handleSelect(interaction: StringSelectMenuInteraction) {
   const msg = await ensureScreenMessage(interaction, user.id, discordUserId, { scene: selected, zoneId: 2 });
   await interaction.reply({ content: `Scène: ${selected}`, ephemeral: true });
 }
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (interaction.customId.startsWith("set:")) {
+    const discordUserId = interaction.user.id;
+    const user = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+    const [, key, val] = interaction.customId.split(":");
+    if (key === "anim") setSetting(user.id, "animations", val === "on");
+    if (key === "acc") setSetting(user.id, "accessibility", val === "on");
+    await interaction.reply({ content: "Préférence mise à jour", ephemeral: true });
+  }
+});
 async function start() {
   await client.login(DISCORD_TOKEN);
 }

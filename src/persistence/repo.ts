@@ -61,3 +61,16 @@ export function earnMoney(userId: number, amount: number) {
 export function inTransaction<T>(fn: () => T): T {
   return withTransaction(() => fn());
 }
+export function getSettings(userId: number): Record<string, unknown> {
+  const row = db.prepare("SELECT settings_json FROM users WHERE id = ?").get(userId) as { settings_json: string };
+  try {
+    return JSON.parse(row.settings_json || "{}");
+  } catch {
+    return {};
+  }
+}
+export function setSetting(userId: number, key: string, value: unknown) {
+  const current = getSettings(userId);
+  (current as any)[key] = value;
+  db.prepare("UPDATE users SET settings_json = ? WHERE id = ?").run(JSON.stringify(current), userId);
+}

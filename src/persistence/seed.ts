@@ -83,4 +83,16 @@ export function seedIfNeeded() {
     });
     insertMany();
   }
+  if (!exists("badges")) {
+    const insert = db.prepare("INSERT INTO badges (id, name, bonus_json) VALUES (?, ?, ?)");
+    const badges = [
+      { id: 1, name: "Badge Roche", bonus_json: { atk: 5 } }
+    ];
+    const insertMany = db.transaction(() => {
+      for (const b of badges) {
+        insert.run(b.id, b.name, JSON.stringify(b.bonus_json));
+      }
+    });
+    insertMany();
+  }
 }
