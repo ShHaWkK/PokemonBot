@@ -11,7 +11,7 @@ import { buildScreen } from "./renderer/ScreenRenderer";
 import { runCapture, runEvolution, runMegaEvolution } from "./renderer/cinematics";
 import { randomEncounter } from "./game/spawn";
 import { captureChance, attemptCapture } from "./game/capture";
-import { parseId } from "./discord/ids";
+import { parseId, makeId } from "./discord/ids";
 import { SceneName } from "./scenes/types";
 import { createGymBattle, createRaidBattle, getBattle, performAttack, megaEvolve, switchActive } from "./game/battle";
 import { buildBattle } from "./renderer/BattleRenderer";
@@ -81,13 +81,22 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
         new ButtonBuilder().setCustomId("starter:4").setLabel("Salamèche").setStyle(ButtonStyle.Danger)
       )
     ]});
-  } else if (interaction.commandName === "screen") {
+  } else if (interaction.commandName === "screen") 
+    {
     await interaction.deferReply({ ephemeral: true });
-    await ensureScreenMessage(interaction, user.id, discordUserId, { scene: "Exploration", zoneId: 2 });
+    await ensureScreenMessage(interaction, user.id, discordUserId, 
+      { scene: "Exploration", zoneId: 2 
+
+    });
     await interaction.editReply({ content: "Écran prêt" });
-  } else if (interaction.commandName === "settings") {
-    await interaction.reply({ content: "Réglez vos préférences", ephemeral: true, components: [
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
+  } else if (interaction.commandName === "settings") 
+    {
+
+    await interaction.reply({ content: "Réglez vos préférences", ephemeral: true, components: 
+      [
+      new ActionRowBuilder<ButtonBuilder>().addComponents
+      (
+
         new ButtonBuilder().setCustomId("set:anim:on").setLabel("Animations ON").setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId("set:anim:off").setLabel("Animations OFF").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("set:acc:on").setLabel("Accessibilité ON").setStyle(ButtonStyle.Success),
@@ -151,6 +160,39 @@ async function handleButton(interaction: ButtonInteraction) {
     const team = db.prepare("SELECT pi.id, s.name, pi.level, pi.in_team_slot FROM pokemon_instances pi JOIN species s ON s.id = pi.species_id WHERE pi.owner_user_id = ? AND pi.in_team_slot IS NOT NULL ORDER BY pi.in_team_slot").all(user.id) as { id:number; name:string; level:number; in_team_slot:number }[];
     const text = team.length ? team.map(t => `#${t.in_team_slot} ${t.name} Lv.${t.level}`).join("\n") : "Équipe vide";
     await interaction.reply({ content: text, ephemeral: true });
+  } else if (parsed.scene === "Equipe" && parsed.action === "apprendre") {
+    const team = db.prepare("SELECT id, species_id, level, moves_json FROM pokemon_instances WHERE owner_user_id = ? AND in_team_slot IS NOT NULL ORDER BY in_team_slot").all(user.id) as { id:number; species_id:number; level:number; moves_json:string | null }[];
+    if (!team.length) {
+      await interaction.reply({ content: "Équipe vide", ephemeral: true });
+      return;
+    }
+    const mon = team[0];
+    const srow = db.prepare("SELECT learnset_json FROM species WHERE id = ?").get(mon.species_id) as { learnset_json: string };
+    const learned = mon.moves_json ? JSON.parse(mon.moves_json) as string[] : [];
+    const ls = srow.learnset_json ? JSON.parse(srow.learnset_json) as { level:number; move:string }[] : [];
+    const candidates = ls.filter(e => e.level <= mon.level && !learned.includes(e.move)).slice(-1);
+    if (!candidates.length) {
+      await interaction.reply({ content: "Aucune nouvelle attaque à apprendre", ephemeral: true });
+      return;
+    }
+    const move = candidates[0].move;
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Equipe", action: "learn", data: `${mon.id}:${move}:0` })).setLabel("Remplacer #1").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Equipe", action: "learn", data: `${mon.id}:${move}:1` })).setLabel("Remplacer #2").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Equipe", action: "learn", data: `${mon.id}:${move}:2` })).setLabel("Remplacer #3").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Equipe", action: "learn", data: `${mon.id}:${move}:3` })).setLabel("Remplacer #4").setStyle(ButtonStyle.Primary)
+    );
+    await interaction.reply({ content: `Apprendre ${move}`, ephemeral: true, components: [row] });
+  } else if (parsed.scene === "Equipe" && parsed.action === "learn") {
+    const [pidStr, move, slotStr] = String(parsed.data).split(":");
+    const pid = parseInt(pidStr, 10);
+    const slot = parseInt(slotStr, 10);
+    const row = db.prepare("SELECT moves_json FROM pokemon_instances WHERE id = ?").get(pid) as { moves_json: string } | undefined;
+    let moves = row?.moves_json ? JSON.parse(row!.moves_json) as string[] : [];
+    if (!moves.length) moves = ["tackle", "ember", "water_gun", "vine_whip"];
+    moves[slot] = move;
+    db.prepare("UPDATE pokemon_instances SET moves_json = ? WHERE id = ?").run(JSON.stringify(moves), pid);
+    await interaction.reply({ content: "Attaque remplacée", ephemeral: true });
   } else if (parsed.scene === "Sac" && parsed.action === "utiliser") {
     const inv = getInventory(user.id);
     const potion = inv.find(i => i.item_id === 10)?.quantity || 0;
@@ -203,13 +245,20 @@ async function handleButton(interaction: ButtonInteraction) {
     adjustInventory(user.id, itemId, 1);
     await interaction.reply({ content: "Mega Stone ajoutée", ephemeral: true });
   } else if (parsed.scene === "Arenes" && parsed.action === "defier") {
-    const battleId = createGymBattle(user.id, 1);
+    await interaction.reply({ content: "Choisissez une arène", ephemeral: true, components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "1" })).setLabel("Jadielle").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "2" })).setLabel("Argenta").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(makeId(discordUserId, { scene: "Arenes", action: "arena", data: "3" })).setLabel("Carmin").setStyle(ButtonStyle.Danger)
+      )
+    ]});
+  } else if (parsed.scene === "Arenes" && parsed.action === "arena") {
+    const gymId = Number(parsed.data);
+    const battleId = createGymBattle(user.id, gymId);
     const b = getBattle(battleId)!;
-    const channel = interaction.channel as TextChannel;
-    const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
     const msg = await ensureScreenMessage(interaction, user.id, discordUserId, { scene: "Battle", zoneId: 2 });
     await msg.edit(buildBattle(discordUserId, b));
-    await interaction.reply({ content: "Combat d'arène lancé", ephemeral: true });
+    await interaction.reply({ content: "Combat d'arène engagé", ephemeral: true });
   } else if (parsed.scene === "Quetes" && parsed.action === "suivre") {
     const last = lastAudit(user.id, "raid_start");
     if (last && Date.now() - new Date(last.created_at).getTime() < 24 * 60 * 60 * 1000) {

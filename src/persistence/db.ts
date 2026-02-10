@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS species (
   types_json TEXT NOT NULL,
   base_stats_json TEXT NOT NULL,
   evolutions_json TEXT,
+  learnset_json TEXT,
   mega_json TEXT
 );
 CREATE TABLE IF NOT EXISTS zones (

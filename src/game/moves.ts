@@ -1,12 +1,12 @@
 import { PType } from "./types";
 export type MoveId = "tackle" | "ember" | "water_gun" | "vine_whip" | "thunder_shock";
-export type Move = { id: MoveId; name: string; type: PType; power: number; status?: { kind: "burn" | "paralysis"; chance: number } };
+export type Move = { id: MoveId; name: string; type: PType; power: number; accuracy?: number; status?: { kind: "burn" | "paralysis" | "poison" | "sleep" | "freeze"; chance: number } };
 const moves: Record<MoveId, Move> = {
-  tackle: { id: "tackle", name: "Tackle", type: "Normal", power: 40 },
-  ember: { id: "ember", name: "Ember", type: "Feu", power: 40, status: { kind: "burn", chance: 0.1 } },
-  water_gun: { id: "water_gun", name: "Water Gun", type: "Eau", power: 40 },
-  vine_whip: { id: "vine_whip", name: "Vine Whip", type: "Plante", power: 45 },
-  thunder_shock: { id: "thunder_shock", name: "Thunder Shock", type: "Electrik", power: 40, status: { kind: "paralysis", chance: 0.1 } }
+  tackle: { id: "tackle", name: "Tackle", type: "Normal", power: 40, accuracy: 1 },
+  ember: { id: "ember", name: "Ember", type: "Feu", power: 40, accuracy: 1, status: { kind: "burn", chance: 0.1 } },
+  water_gun: { id: "water_gun", name: "Water Gun", type: "Eau", power: 40, accuracy: 1 },
+  vine_whip: { id: "vine_whip", name: "Vine Whip", type: "Plante", power: 45, accuracy: 0.95 },
+  thunder_shock: { id: "thunder_shock", name: "Thunder Shock", type: "Electrik", power: 40, accuracy: 1, status: { kind: "paralysis", chance: 0.1 } }
 };
 export function getMove(id: MoveId): Move {
   return moves[id];

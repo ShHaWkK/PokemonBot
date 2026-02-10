@@ -19,7 +19,32 @@ export function setScreenMessageId(userId: number, messageId: string) {
 export function addPokemon(ownerUserId: number, speciesId: number, level: number, isShiny: boolean) {
   const slotRow = db.prepare("SELECT COUNT(1) as c FROM pokemon_instances WHERE owner_user_id = ? AND in_team_slot IS NOT NULL").get(ownerUserId) as { c: number };
   const slot = slotRow.c < 6 ? slotRow.c + 1 : null;
-  db.prepare("INSERT INTO pokemon_instances (owner_user_id, species_id, level, exp, is_shiny, in_team_slot) VALUES (?, ?, ?, ?, ?, ?)").run(ownerUserId, speciesId, level, 0, isShiny ? 1 : 0, slot);
+  const learnsetRow = db.prepare("SELECT learnset_json, types_json FROM species WHERE id = ?").get(speciesId) as { learnset_json: string; types_json: string };
+  let moves: string[] = [];
+  try {
+    const ls = JSON.parse(learnsetRow.learnset_json || "[]") as { level: number; move: string }[];
+    moves = ls.filter(e => e.level <= level).map(e => e.move).slice(-4);
+  } catch {
+    moves = [];
+  }
+  if (moves.length === 0) {
+    const types = JSON.parse(learnsetRow.types_json) as string[];
+    const fallback = types.includes("Feu") ? ["ember", "tackle"] : types.includes("Eau") ? ["water_gun", "tackle"] : types.includes("Plante") ? ["vine_whip", "tackle"] : ["tackle"];
+    moves = [...fallback, "thunder_shock", "vine_whip"].slice(0, 4);
+  }
+  db.prepare("INSERT INTO pokemon_instances (owner_user_id, species_id, level, exp, moves_json, is_shiny, in_team_slot) VALUES (?, ?, ?, ?, ?, ?, ?)").run(ownerUserId, speciesId, level, 0, JSON.stringify(moves), isShiny ? 1 : 0, slot);
+}
+export function getPokemonMoves(pokemonId: number): string[] {
+  const row = db.prepare("SELECT moves_json FROM pokemon_instances WHERE id = ?").get(pokemonId) as { moves_json: string } | undefined;
+  if (!row || !row.moves_json) return [];
+  try {
+    return JSON.parse(row.moves_json) as string[];
+  } catch {
+    return [];
+  }
+}
+export function setPokemonMoves(pokemonId: number, moves: string[]) {
+  db.prepare("UPDATE pokemon_instances SET moves_json = ? WHERE id = ?").run(JSON.stringify(moves.slice(0, 4)), pokemonId);
 }
 export function adjustInventory(userId: number, itemId: number, delta: number) {
   const row = db.prepare("SELECT quantity FROM inventory WHERE owner_user_id = ? AND item_id = ?").get(userId, itemId) as { quantity: number } | undefined;

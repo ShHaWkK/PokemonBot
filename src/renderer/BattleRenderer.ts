@@ -1,14 +1,18 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
 import { makeId } from "../discord/ids";
-export function buildBattle(userId: string, battle: { id: number; type: string; state: string; participants: { playerTeam: { name: string; hp: number; maxHp: number; megaUsed?: boolean; level:number; status?: string; moves:string[] }[]; npcTeam: { name: string; hp: number; maxHp: number; megaUsed?: boolean; level:number; status?: string; moves:string[] }[]; playerActive:number; npcActive:number } }) {
+export function buildBattle(userId: string, battle: { id: number; type: string; state: string; participants: { playerTeam: { name: string; hp: number; maxHp: number; megaUsed?: boolean; level:number; status?: string; moves:string[] }[]; npcTeam: { name: string; hp: number; maxHp: number; megaUsed?: boolean; level:number; status?: string; moves:string[] }[]; playerActive:number; npcActive:number }, log?: string[] }) {
   const p = battle.participants.playerTeam[battle.participants.playerActive];
   const n = battle.participants.npcTeam[battle.participants.npcActive];
   const embed = new EmbedBuilder().setTitle("Combat").setDescription(`${p.name} Lv.${p.level} ${bar(p.hp, p.maxHp)} ${statusText(p.status)}\nVS\n${n.name} Lv.${n.level} ${bar(n.hp, n.maxHp)} ${statusText(n.status)}`).setColor(0xe74c3c);
+  const footerLog = (battle as any).log as string[] | undefined;
+  if (footerLog && footerLog.length) {
+    embed.setFooter({ text: footerLog.slice(-5).join(" | ") });
+  }
   const actions = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(makeId(userId, { scene: "Battle", action: "atk1", data: String(battle.id) })).setLabel("Attaque 1").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(makeId(userId, { scene: "Battle", action: "atk2", data: String(battle.id) })).setLabel("Attaque 2").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(makeId(userId, { scene: "Battle", action: "atk3", data: String(battle.id) })).setLabel("Attaque 3").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(makeId(userId, { scene: "Battle", action: "atk4", data: String(battle.id) })).setLabel("Attaque 4").setStyle(ButtonStyle.Primary)
+    new ButtonBuilder().setCustomId(makeId(userId, { scene: "Battle", action: "atk1", data: String(battle.id) })).setLabel(p.moves[0] || "Attaque 1").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(makeId(userId, { scene: "Battle", action: "atk2", data: String(battle.id) })).setLabel(p.moves[1] || "Attaque 2").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(makeId(userId, { scene: "Battle", action: "atk3", data: String(battle.id) })).setLabel(p.moves[2] || "Attaque 3").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(makeId(userId, { scene: "Battle", action: "atk4", data: String(battle.id) })).setLabel(p.moves[3] || "Attaque 4").setStyle(ButtonStyle.Primary)
   );
   const utility = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(makeId(userId, { scene: "Battle", action: "objet", data: String(battle.id) })).setLabel("Objet").setStyle(ButtonStyle.Secondary),
@@ -28,5 +32,8 @@ function statusText(s?: string): string {
   if (!s) return "";
   if (s === "paralysis") return "(PAR)";
   if (s === "burn") return "(BRN)";
+  if (s === "poison") return "(PSN)";
+  if (s === "sleep") return "(SLP)";
+  if (s === "freeze") return "(FRZ)";
   return "";
 }
