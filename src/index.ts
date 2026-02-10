@@ -1,0 +1,298 @@
+import { Client, GatewayIntentBits, Interaction, TextChannel, ButtonInteraction, StringSelectMenuInteraction, ChatInputCommandInteraction, ButtonBuilder, ButtonStyle, ActionRowBuilder } from "discord.js";
+import { registerCommands } from "./discord/commands";
+import { seedIfNeeded } from "./persistence/seed";
+import { db } from "./persistence/db";
+
+import { findOrCreateUser, setStarter, addPokemon, setScreenMessageId, addDexSeen, addDexCaught, adjustInventory, getInventory, inTransaction } from "./persistence/repo";
+import { recordRequest } from "./persistence/idempotency";
+import { DISCORD_TOKEN, GUILD_ID } from "./lib/config";
+import { buildScreen } from "./renderer/ScreenRenderer";
+
+import { runCapture, runEvolution, runMegaEvolution } from "./renderer/cinematics";
+import { randomEncounter } from "./game/spawn";
+import { captureChance, attemptCapture } from "./game/capture";
+import { parseId } from "./discord/ids";
+import { SceneName } from "./scenes/types";
+import { createGymBattle, createRaidBattle, getBattle, performAttack, megaEvolve } from "./game/battle";
+import { buildBattle } from "./renderer/BattleRenderer";
+import { logAudit, lastAudit } from "./persistence/audit";
+
+
+
+
+const client = new Client(
+  { intents: 
+    [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] 
+  }
+);
+
+
+async function ensureScreenMessage(interaction: Interaction, userId: number, discordUserId: string, state: 
+  { scene: SceneName; zoneId: number 
+
+  }) {
+  const user = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+  const channel = interaction.channel as TextChannel;
+  if 
+  (!user.screen_message_id) 
+  {
+    const message = await channel.send(buildScreen({ userId: discordUserId, activeScene: state.scene, zoneId: state.zoneId }));
+    setScreenMessageId(user.id, message.id);
+    return message;
+  } else 
+    {
+    const msg = await channel.messages.fetch(user.screen_message_id).catch(() => null);
+    if (!msg) {
+      const message = await channel.send(buildScreen({ userId: discordUserId, activeScene: state.scene, zoneId: state.zoneId }));
+      setScreenMessageId(user.id, message.id);
+      return message;
+    }
+    await msg.edit(buildScreen({ userId: discordUserId, activeScene: state.scene, zoneId: state.zoneId }));
+    return msg;
+  }
+}
+client.once("ready", async () => 
+  {
+  seedIfNeeded();
+  await registerCommands();
+});
+
+client.on("interactionCreate", async (interaction) => 
+  {
+  if (interaction.isChatInputCommand()) return handleCommand(interaction);
+  if (interaction.isButton()) return handleButton(interaction);
+  if (interaction.isStringSelectMenu()) return handleSelect(interaction);
+});
+
+async function handleCommand(interaction: ChatInputCommandInteraction) {
+  const discordUserId = interaction.user.id;
+  const user = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+  if (!recordRequest(user.id, interaction.id)) {
+    await interaction.reply({ content: "Déjà traité", ephemeral: true });
+    return;
+  }
+  if (interaction.commandName === "start") {
+    await interaction.reply({ content: "Choisissez votre starter", ephemeral: true, components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId("starter:7").setLabel("Carapuce").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("starter:1").setLabel("Bulbizarre").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("starter:4").setLabel("Salamèche").setStyle(ButtonStyle.Danger)
+      )
+    ]});
+  } else if (interaction.commandName === "screen") {
+    await interaction.deferReply({ ephemeral: true });
+    await ensureScreenMessage(interaction, user.id, discordUserId, { scene: "Exploration", zoneId: 2 });
+    await interaction.editReply({ content: "Écran prêt" });
+  } else if (interaction.commandName === "settings") {
+    await interaction.reply({ content: "Paramètres indisponibles pour l'instant", ephemeral: true });
+  } else if (interaction.commandName === "redeem") {
+    await interaction.reply({ content: "Code non reconnu", ephemeral: true });
+  } else if (interaction.commandName === "help") {
+    await interaction.reply({ content: "Aide contextuelle: utilisez le menu pour naviguer", ephemeral: true });
+  }
+}
+async function handleButton(interaction: ButtonInteraction) {
+  const discordUserId = interaction.user.id;
+  const user = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+  if (!recordRequest(user.id, interaction.id)) {
+    await interaction.reply({ content: "Déjà traité", ephemeral: true });
+    return;
+  }
+  if (interaction.customId.startsWith("starter:")) {
+    const speciesId = parseInt(interaction.customId.split(":")[1], 10);
+    setStarter(user.id, speciesId);
+    addPokemon(user.id, speciesId, 5, false);
+    adjustInventory(user.id, 1, 10);
+    await interaction.reply({ content: "Starter choisi. Écran en cours d'initialisation.", ephemeral: true });
+    const channel = interaction.channel as TextChannel;
+    const msg = await ensureScreenMessage(interaction, user.id, discordUserId, { scene: "Exploration", zoneId: 2 });
+    await msg.edit(buildScreen({ userId: discordUserId, activeScene: "Exploration", zoneId: 2 }));
+    return;
+  }
+  const parsed = parseId(interaction.customId);
+  if (parsed.action === "explore") {
+    const encounter = randomEncounter(2);
+    addDexSeen(user.id, encounter.speciesId, false);
+    await interaction.reply({ content: `Rencontre: ${encounter.name}`, ephemeral: true });
+    const channel = interaction.channel as TextChannel;
+    const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+    if (userRow.screen_message_id) {
+      await runCapture(client, channel.id, userRow.screen_message_id, encounter.name);
+    }
+    const inv = getInventory(user.id);
+    const hasPokeball = inv.find(i => i.item_id === 1)?.quantity || 0;
+    const hasGreat = inv.find(i => i.item_id === 2)?.quantity || 0;
+    const hasUltra = inv.find(i => i.item_id === 3)?.quantity || 0;
+    await interaction.followUp({ ephemeral: true, content: "Choisissez une balle", components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(`cap:${encounter.speciesId}:${encounter.level}:1`).setLabel(`Poké Ball (${hasPokeball})`).setStyle(ButtonStyle.Primary).setDisabled(hasPokeball <= 0),
+        new ButtonBuilder().setCustomId(`cap:${encounter.speciesId}:${encounter.level}:2`).setLabel(`Super Ball (${hasGreat})`).setStyle(ButtonStyle.Success).setDisabled(hasGreat <= 0),
+        new ButtonBuilder().setCustomId(`cap:${encounter.speciesId}:${encounter.level}:3`).setLabel(`Hyper Ball (${hasUltra})`).setStyle(ButtonStyle.Danger).setDisabled(hasUltra <= 0)
+      )
+    ]});
+  } else if (parsed.action === "repousse") {
+    await interaction.reply({ content: "Repousse activé/désactivé", ephemeral: true });
+  } else if (parsed.action === "info") {
+    await interaction.reply({ content: "Infos de la zone: Route 1, rencontres basiques", ephemeral: true });
+  } else if (parsed.action === "soigner") {
+    await interaction.reply({ content: "Centre Pokémon: vos Pokémon sont soignés", ephemeral: true });
+  } else if (parsed.scene === "Equipe" && parsed.action === "details") {
+    const team = db.prepare("SELECT pi.id, s.name, pi.level, pi.in_team_slot FROM pokemon_instances pi JOIN species s ON s.id = pi.species_id WHERE pi.owner_user_id = ? AND pi.in_team_slot IS NOT NULL ORDER BY pi.in_team_slot").all(user.id) as { id:number; name:string; level:number; in_team_slot:number }[];
+    const text = team.length ? team.map(t => `#${t.in_team_slot} ${t.name} Lv.${t.level}`).join("\n") : "Équipe vide";
+    await interaction.reply({ content: text, ephemeral: true });
+  } else if (parsed.scene === "Sac" && parsed.action === "utiliser") {
+    const inv = getInventory(user.id);
+    const potion = inv.find(i => i.item_id === 10)?.quantity || 0;
+    if (potion <= 0) {
+      await interaction.reply({ content: "Aucune potion", ephemeral: true });
+    } else {
+      adjustInventory(user.id, 10, -1);
+      await interaction.reply({ content: "Potion utilisée", ephemeral: true });
+    }
+  } else if (parsed.scene === "Pokedex" && parsed.action === "details") {
+    const dex = db.prepare("SELECT s.name, p.seen_count, p.caught_count FROM pokedex p JOIN species s ON s.id = p.species_id WHERE p.owner_user_id = ? ORDER BY s.id").all(user.id) as { name:string; seen_count:number; caught_count:number }[];
+    const text = dex.length ? dex.map(d => `${d.name} vu:${d.seen_count} capturé:${d.caught_count}`).join("\n") : "Aucune entrée";
+    await interaction.reply({ content: text, ephemeral: true });
+  } else if (parsed.scene === "Shop" && parsed.action === "acheter") {
+    const price = 200;
+    const ok = db.prepare("SELECT money FROM users WHERE id = ?").get(user.id) as { money:number };
+    if (ok.money < price) {
+      await interaction.reply({ content: "Fonds insuffisants", ephemeral: true });
+    } else {
+      db.prepare("UPDATE users SET money = money - ? WHERE id = ?").run(price, user.id);
+      adjustInventory(user.id, 1, 1);
+      await interaction.reply({ content: "Achat: Poké Ball +1", ephemeral: true });
+    }
+  } else if (parsed.scene === "Arenes" && parsed.action === "defier") {
+    const battleId = createGymBattle(user.id, 1);
+    const b = getBattle(battleId)!;
+    const channel = interaction.channel as TextChannel;
+    const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+    const msg = await ensureScreenMessage(interaction, user.id, discordUserId, { scene: "Battle", zoneId: 2 });
+    await msg.edit(buildBattle(discordUserId, b));
+    await interaction.reply({ content: "Combat d'arène lancé", ephemeral: true });
+  } else if (parsed.scene === "Quetes" && parsed.action === "suivre") {
+    const last = lastAudit(user.id, "raid_start");
+    if (last && Date.now() - new Date(last.created_at).getTime() < 24 * 60 * 60 * 1000) {
+      await interaction.reply({ content: "Raid en cooldown", ephemeral: true });
+    } else {
+      const battleId = createRaidBattle(user.id);
+      logAudit(user.id, "raid_start", "battle", battleId, interaction.id, {}, true);
+      const b = getBattle(battleId)!;
+      const msg = await ensureScreenMessage(interaction, user.id, discordUserId, { scene: "Battle", zoneId: 2 });
+      await msg.edit(buildBattle(discordUserId, b));
+      await interaction.reply({ content: "Raid légendaire engagé", ephemeral: true });
+    }
+  } else if (parsed.scene === "Battle" && parsed.action?.startsWith("atk")) {
+    const battleId = Number(parsed.data);
+    const res = performAttack(battleId, "player", 1);
+    const b = getBattle(battleId)!;
+    const channel = interaction.channel as TextChannel;
+    const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+    const msg = await channel.messages.fetch(userRow.screen_message_id!);
+    await msg.edit(buildBattle(discordUserId, b));
+    if (res.ended) {
+      if (b.type === "gym") {
+        adjustInventory(user.id, 1, 2);
+        await interaction.reply({ content: "Victoire d'arène. Récompense: Poké Ball x2", ephemeral: true });
+      } else {
+        const inv = getInventory(user.id);
+        const hasHyper = inv.find(i => i.item_id === 3)?.quantity || 0;
+        await interaction.reply({ content: "Raid gagné. Essai de capture disponible", ephemeral: true });
+        await interaction.followUp({ ephemeral: true, content: "Choisissez une balle", components: [
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder().setCustomId(`cap:150:70:3`).setLabel(`Hyper Ball (${hasHyper})`).setStyle(ButtonStyle.Danger).setDisabled(hasHyper <= 0)
+          )
+        ]});
+      }
+    } else {
+      await interaction.reply({ content: "Attaque effectuée", ephemeral: true });
+    }
+  } else if (parsed.scene === "Battle" && parsed.action === "mega") {
+    const battleId = Number(parsed.data);
+    const inv = getInventory(user.id);
+    const hasKeystone = inv.find(i => i.item_id === 30)?.quantity || 0;
+    const b = getBattle(battleId)!;
+    const stoneSpecies = [31,32,33,34,35].map(id => ({ id, qty: inv.find(i => i.item_id === id)?.quantity || 0 })).find(s => s.qty > 0);
+    if (!hasKeystone || !stoneSpecies) {
+      await interaction.reply({ content: "Keystone ou Mega Stone manquants", ephemeral: true });
+      return;
+    }
+    const ok = megaEvolve(battleId, "player");
+    if (!ok) {
+      await interaction.reply({ content: "Méga déjà utilisée", ephemeral: true });
+      return;
+    }
+    const channel = interaction.channel as TextChannel;
+    const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+    const msg = await channel.messages.fetch(userRow.screen_message_id!);
+    await runMegaEvolution(client, channel.id, msg.id, b.participants.player.name);
+    await msg.edit(buildBattle(discordUserId, getBattle(battleId)!));
+    await interaction.reply({ content: "Méga-Évolution activée", ephemeral: true });
+  } else if (parsed.scene === "Battle" && parsed.action === "objet") {
+    const battleId = Number(parsed.data);
+    const inv = getInventory(user.id);
+    const potion = inv.find(i => i.item_id === 10)?.quantity || 0;
+    if (potion <= 0) {
+      await interaction.reply({ content: "Aucune potion", ephemeral: true });
+    } else {
+      adjustInventory(user.id, 10, -1);
+      const b = getBattle(battleId)!;
+      b.participants.player.hp = Math.min(b.participants.player.maxHp, b.participants.player.hp + 20);
+      db.prepare("UPDATE battles SET participants_json = ? WHERE id = ?").run(JSON.stringify(b.participants), battleId);
+      const channel = interaction.channel as TextChannel;
+      const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+      const msg = await channel.messages.fetch(userRow.screen_message_id!);
+      await msg.edit(buildBattle(discordUserId, getBattle(battleId)!));
+      await interaction.reply({ content: "Potion utilisée", ephemeral: true });
+    }
+  } else if (parsed.scene === "Battle" && parsed.action === "fuir") {
+    const battleId = Number(parsed.data);
+    db.prepare("UPDATE battles SET state = ? WHERE id = ?").run("ended", battleId);
+    await interaction.reply({ content: "Vous avez fui le combat", ephemeral: true });
+  } else if (interaction.customId.startsWith("cap:")) {
+    const [, speciesIdStr, levelStr, ballIdStr] = interaction.customId.split(":");
+    const speciesId = parseInt(speciesIdStr, 10);
+    const level = parseInt(levelStr, 10);
+    const ballId = parseInt(ballIdStr, 10);
+    if (speciesId === 150) {
+      const row = db.prepare("SELECT caught_count FROM pokedex WHERE owner_user_id = ? AND species_id = ?").get(user.id, 150) as { caught_count:number } | undefined;
+      if (row && row.caught_count > 0) {
+        await interaction.reply({ content: "Rencontre légendaire déjà capturée", ephemeral: true });
+        return;
+      }
+    }
+    const chance = captureChance(ballId, speciesId, level);
+    const success = attemptCapture(chance);
+    inTransaction(() => {
+      adjustInventory(user.id, ballId, -1);
+      if (success) {
+        addPokemon(user.id, speciesId, level, false);
+        addDexCaught(user.id, speciesId, false);
+      }
+    });
+    await interaction.reply({ content: success ? "Capture réussie" : "Capture échouée", ephemeral: true });
+  } else {
+    await interaction.reply({ content: "Action non gérée", ephemeral: true });
+  }
+}
+async function handleSelect(interaction: StringSelectMenuInteraction) {
+  const discordUserId = interaction.user.id;
+  const user = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+  if (!recordRequest(user.id, interaction.id)) {
+    await interaction.reply({ content: "Déjà traité", ephemeral: true });
+    return;
+  }
+  const selected = interaction.values[0] as SceneName;
+  if (!selected) {
+    await interaction.reply({ content: "Aucune sélection", ephemeral: true });
+    return;
+  }
+  const channel = interaction.channel as TextChannel;
+  const msg = await ensureScreenMessage(interaction, user.id, discordUserId, { scene: selected, zoneId: 2 });
+  await interaction.reply({ content: `Scène: ${selected}`, ephemeral: true });
+}
+async function start() {
+  await client.login(DISCORD_TOKEN);
+}
+start();
