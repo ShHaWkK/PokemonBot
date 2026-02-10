@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "import:pokedex": "tsx src/tools/import_pokeapi.ts"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.1",
