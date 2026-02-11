@@ -82,14 +82,14 @@ export function seedIfNeeded() {
   {
     const insert = db.prepare("INSERT INTO gyms (id, guild_id, name, leader_npc_id, badge_id, rules_json, zone_id, difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET guild_id=excluded.guild_id, name=excluded.name, leader_npc_id=excluded.leader_npc_id, badge_id=excluded.badge_id, rules_json=excluded.rules_json, zone_id=excluded.zone_id, difficulty=excluded.difficulty");
     const gyms = [
-      { id: 1, guild_id: null, name: "Arène d'Argenta", leader_npc_id: 1001, badge_id: 1, rules_json: { team: [74,95,112], level: 12, allowedItems: true, intro: "Je suis Pierre, maître des roches.", terrain: "Grottes" }, zone_id: 4, difficulty: 1 },
-      { id: 2, guild_id: null, name: "Arène d'Azuria", leader_npc_id: 1002, badge_id: 2, rules_json: { team: [120,7,8], level: 18, allowedItems: true, intro: "Ondine, la sirène de la ville!", terrain: "Eau" }, zone_id: 5, difficulty: 2 },
-      { id: 3, guild_id: null, name: "Arène de Carmin", leader_npc_id: 1003, badge_id: 3, rules_json: { team: [25,133,59], level: 22, allowedItems: false, intro: "Major Bob, prêt à vous électriser.", terrain: "Ville" }, zone_id: 2, difficulty: 3 },
-      { id: 4, guild_id: null, name: "Arène de Céladopole", leader_npc_id: 1004, badge_id: 4, rules_json: { team: [45,1,3], level: 26, allowedItems: false, intro: "Erika, élégance et nature.", terrain: "Herbes" }, zone_id: 3, difficulty: 4 },
-      { id: 5, guild_id: null, name: "Arène de Parmanie", leader_npc_id: 1005, badge_id: 5, rules_json: { team: [109,25,133], level: 30, allowedItems: true, intro: "Koga, maître des poisons.", terrain: "Herbes" }, zone_id: 3, difficulty: 5 },
-      { id: 6, guild_id: null, name: "Arène de Safrania", leader_npc_id: 1006, badge_id: 6, rules_json: { team: [65,25,133], level: 36, allowedItems: false, intro: "Je suis Morgane, la psychiste.", terrain: "Ville" }, zone_id: 1, difficulty: 6 },
-      { id: 7, guild_id: null, name: "Arène de Cramois’Île", leader_npc_id: 1007, badge_id: 7, rules_json: { team: [59,4,5], level: 42, allowedItems: true, intro: "Auguste, le volcan ardent.", terrain: "Volcan" }, zone_id: 4, difficulty: 7 },
-      { id: 8, guild_id: null, name: "Arène de Jadielle", leader_npc_id: 1008, badge_id: 8, rules_json: { team: [112,74,95], level: 50, allowedItems: false, intro: "Giovanni… le chef de la Team Rocket.", terrain: "Grottes" }, zone_id: 3, difficulty: 8 }
+      { id: 1, guild_id: null, name: "Arène d'Argenta", leader_npc_id: 1001, badge_id: 1, rules_json: { team: [74,95,112,74,95,112], level: 12, allowedItems: true, intro: "Je suis Pierre, maître des roches.", terrain: "Grottes" }, zone_id: 4, difficulty: 1 },
+      { id: 2, guild_id: null, name: "Arène d'Azuria", leader_npc_id: 1002, badge_id: 2, rules_json: { team: [120,7,8,9,120,7], level: 18, allowedItems: true, intro: "Ondine, la sirène de la ville!", terrain: "Eau" }, zone_id: 5, difficulty: 2 },
+      { id: 3, guild_id: null, name: "Arène de Carmin", leader_npc_id: 1003, badge_id: 3, rules_json: { team: [25,25,133,59,25,133], level: 22, allowedItems: false, intro: "Major Bob, prêt à vous électriser.", terrain: "Ville" }, zone_id: 2, difficulty: 3 },
+      { id: 4, guild_id: null, name: "Arène de Céladopole", leader_npc_id: 1004, badge_id: 4, rules_json: { team: [45,1,2,3,45,1], level: 26, allowedItems: false, intro: "Erika, élégance et nature.", terrain: "Herbes" }, zone_id: 3, difficulty: 4 },
+      { id: 5, guild_id: null, name: "Arène de Parmanie", leader_npc_id: 1005, badge_id: 5, rules_json: { team: [109,25,133,109,74,95], level: 30, allowedItems: true, intro: "Koga, maître des poisons.", terrain: "Herbes" }, zone_id: 3, difficulty: 5 },
+      { id: 6, guild_id: null, name: "Arène de Safrania", leader_npc_id: 1006, badge_id: 6, rules_json: { team: [65,25,133,65,7,8], level: 36, allowedItems: false, intro: "Je suis Morgane, la psychiste.", terrain: "Ville" }, zone_id: 1, difficulty: 6 },
+      { id: 7, guild_id: null, name: "Arène de Cramois’Île", leader_npc_id: 1007, badge_id: 7, rules_json: { team: [59,4,5,6,59,4], level: 42, allowedItems: true, intro: "Auguste, le volcan ardent.", terrain: "Volcan" }, zone_id: 4, difficulty: 7 },
+      { id: 8, guild_id: null, name: "Arène de Jadielle", leader_npc_id: 1008, badge_id: 8, rules_json: { team: [112,74,95,112,74,95], level: 50, allowedItems: false, intro: "Giovanni… le chef de la Team Rocket.", terrain: "Grottes" }, zone_id: 3, difficulty: 8 }
     ];
     const insertMany = db.transaction(() => {
       for (const g of gyms) {

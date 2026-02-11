@@ -107,3 +107,46 @@ export function canAccessZone(userId: number, zoneId: number): boolean {
   const highest = team.length ? Math.max(...team.map(t => t.level)) : 1;
   return highest >= min;
 }
+export function awardTeamExp(userId: number, expGain: number): { id:number; species_id:number; slot: number; before: number; after: number; name: string }[] {
+  const rows = db.prepare("SELECT pi.id, pi.species_id, pi.level, pi.exp, pi.in_team_slot, s.name FROM pokemon_instances pi JOIN species s ON s.id = pi.species_id WHERE pi.owner_user_id = ? AND pi.in_team_slot IS NOT NULL ORDER BY pi.in_team_slot").all(userId) as { id:number; species_id:number; level:number; exp:number; in_team_slot:number; name:string }[];
+  const ups: { id:number; species_id:number; slot:number; before:number; after:number; name:string }[] = [];
+  for (const r of rows) {
+    let level = r.level;
+    let exp = r.exp + expGain;
+    let changed = false;
+    for (let i = 0; i < 5; i++) {
+      const threshold = Math.max(20, level * 50);
+      if (exp >= threshold) {
+        exp -= threshold;
+        level += 1;
+        changed = true;
+      } else break;
+    }
+    db.prepare("UPDATE pokemon_instances SET level = ?, exp = ? WHERE id = ?").run(level, exp, r.id);
+    if (changed) ups.push({ id: r.id, species_id: r.species_id, slot: r.in_team_slot, before: r.level, after: level, name: r.name });
+  }
+  return ups;
+}
+
+export function xpCaptureGainByZone(zoneId: number): number {
+  const z = db.prepare("SELECT biome FROM zones WHERE id = ?").get(zoneId) as { biome:string } | undefined;
+  const biome = z?.biome || "Herbes";
+  if (biome === "Ville") return 3;
+  if (biome === "Grottes" || biome === "Montagne" || biome === "Glace") return 8;
+  if (biome === "Volcan") return 7;
+  if (biome === "Eau") return 6;
+  return 5;
+}
+
+export function rewardMilestones(userId: number, ups: { before:number; after:number }[]): { pokeball:number; greatball:number; ultraball:number } {
+  let p = 0, g = 0, u = 0;
+  for (const uo of ups) {
+    if (uo.before < 10 && uo.after >= 10) p += 1;
+    if (uo.before < 20 && uo.after >= 20) g += 1;
+    if (uo.before < 30 && uo.after >= 30) u += 1;
+  }
+  if (p > 0) db.prepare("INSERT INTO inventory (owner_user_id, item_id, quantity) VALUES (?, ?, ?) ON CONFLICT(owner_user_id, item_id) DO UPDATE SET quantity = quantity + excluded.quantity").run(userId, 1, p);
+  if (g > 0) db.prepare("INSERT INTO inventory (owner_user_id, item_id, quantity) VALUES (?, ?, ?) ON CONFLICT(owner_user_id, item_id) DO UPDATE SET quantity = quantity + excluded.quantity").run(userId, 2, g);
+  if (u > 0) db.prepare("INSERT INTO inventory (owner_user_id, item_id, quantity) VALUES (?, ?, ?) ON CONFLICT(owner_user_id, item_id) DO UPDATE SET quantity = quantity + excluded.quantity").run(userId, 3, u);
+  return { pokeball: p, greatball: g, ultraball: u };
+}

@@ -1,9 +1,9 @@
-import { Client, GatewayIntentBits, Interaction, TextChannel, ButtonInteraction, StringSelectMenuInteraction, ChatInputCommandInteraction, ButtonBuilder, ButtonStyle, ActionRowBuilder } from "discord.js";
+import { Client, GatewayIntentBits, Interaction, TextChannel, ButtonInteraction, StringSelectMenuInteraction, ChatInputCommandInteraction, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } from "discord.js";
 import { registerCommands } from "./discord/commands";
 import { seedIfNeeded } from "./persistence/seed";
 import { db } from "./persistence/db";
 
-import { findOrCreateUser, setStarter, addPokemon, setScreenMessageId, addDexSeen, addDexCaught, adjustInventory, getInventory, inTransaction, canAccessZone } from "./persistence/repo";
+import { findOrCreateUser, setStarter, addPokemon, setScreenMessageId, addDexSeen, addDexCaught, adjustInventory, getInventory, inTransaction, canAccessZone, awardTeamExp, xpCaptureGainByZone, rewardMilestones } from "./persistence/repo";
 import { recordRequest } from "./persistence/idempotency";
 import { DISCORD_TOKEN, GUILD_ID } from "./lib/config";
 import { buildScreen } from "./renderer/ScreenRenderer";
@@ -18,7 +18,43 @@ import { buildBattle } from "./renderer/BattleRenderer";
 import { logAudit, lastAudit } from "./persistence/audit";
 import { awardBadge, countBadges } from "./persistence/badges";
 import { getSettings, setSetting } from "./persistence/repo";
+import { checkLevelEvolution } from "./game/evolution";
 
+function emojiForTypes(types: string[]): string {
+  const t = types[0];
+  const map: Record<string, string> = {
+    "Feu": "🔥",
+    "Eau": "💧",
+    "Plante": "🌿",
+    "Electrik": "⚡",
+    "Glace": "❄️",
+    "Roche": "🪨",
+    "Sol": "⛰️",
+    "Vol": "🕊️",
+    "Poison": "☠️",
+    "Psy": "🔮",
+    "Tenebres": "🌑",
+    "Fee": "✨",
+    "Spectre": "👻",
+    "Insecte": "🐛",
+    "Acier": "⚙️",
+    "Dragon": "🐉",
+    "Combat": "🥊",
+    "Normal": "🐾"
+  };
+  return map[t] || "⭐";
+}
+async function imageForSpeciesId(id: number): Promise<string> {
+  try {
+    const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${id}/`);
+    if (res.ok) {
+      const p = await res.json();
+      const url = p?.sprites?.other?.["official-artwork"]?.front_default as string | undefined;
+      if (url) return url;
+    }
+  } catch {}
+  return `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${id}.png`;
+}
 
 
 
@@ -142,7 +178,7 @@ async function handleButton(interaction: ButtonInteraction) {
     if (userRow.screen_message_id) {
       const settings = getSettings(user.id);
       const anim = (settings as any).animations !== false;
-      if (anim) await runCapture(client, channel.id, userRow.screen_message_id, encounter.name);
+      if (anim) await runCapture(client, channel.id, userRow.screen_message_id, encounter.name, await imageForSpeciesId(encounter.speciesId));
     }
     const inv = getInventory(user.id);
     const hasPokeball = inv.find(i => i.item_id === 1)?.quantity || 0;
@@ -150,9 +186,9 @@ async function handleButton(interaction: ButtonInteraction) {
     const hasUltra = inv.find(i => i.item_id === 3)?.quantity || 0;
     await interaction.followUp({ ephemeral: true, content: "Choisissez une balle", components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId(`cap:${encounter.speciesId}:${encounter.level}:1`).setLabel(`Poké Ball (${hasPokeball})`).setStyle(ButtonStyle.Primary).setDisabled(hasPokeball <= 0),
-        new ButtonBuilder().setCustomId(`cap:${encounter.speciesId}:${encounter.level}:2`).setLabel(`Super Ball (${hasGreat})`).setStyle(ButtonStyle.Success).setDisabled(hasGreat <= 0),
-        new ButtonBuilder().setCustomId(`cap:${encounter.speciesId}:${encounter.level}:3`).setLabel(`Hyper Ball (${hasUltra})`).setStyle(ButtonStyle.Danger).setDisabled(hasUltra <= 0)
+        new ButtonBuilder().setCustomId(`cap:${encounter.speciesId}:${encounter.level}:1:${zoneId}`).setLabel(`Poké Ball (${hasPokeball})`).setStyle(ButtonStyle.Primary).setDisabled(hasPokeball <= 0),
+        new ButtonBuilder().setCustomId(`cap:${encounter.speciesId}:${encounter.level}:2:${zoneId}`).setLabel(`Super Ball (${hasGreat})`).setStyle(ButtonStyle.Success).setDisabled(hasGreat <= 0),
+        new ButtonBuilder().setCustomId(`cap:${encounter.speciesId}:${encounter.level}:3:${zoneId}`).setLabel(`Hyper Ball (${hasUltra})`).setStyle(ButtonStyle.Danger).setDisabled(hasUltra <= 0)
       )
     ]});
   } else if (parsed.scene === "Exploration" && parsed.action === "repousse") {
@@ -302,7 +338,19 @@ async function handleButton(interaction: ButtonInteraction) {
     const gym = db.prepare("SELECT name, rules_json FROM gyms WHERE id = ?").get(gymId) as { name:string; rules_json:string };
     const rules = gym.rules_json ? JSON.parse(gym.rules_json) as Record<string, unknown> : {};
     const intro = typeof (rules as any).intro === "string" ? (rules as any).intro : "Leader prêt au combat.";
-    await interaction.reply({ content: `${gym.name} • ${intro}`, ephemeral: true });
+    const portraits: Record<number, string> = {
+      1: "https://i.imgur.com/pierre.png",
+      2: "https://i.imgur.com/ondine.png",
+      3: "https://i.imgur.com/majorbob.png",
+      4: "https://i.imgur.com/erika.png",
+      5: "https://i.imgur.com/koga.png",
+      6: "https://i.imgur.com/morgane.png",
+      7: "https://i.imgur.com/auguste.png",
+      8: "https://i.imgur.com/giovanni.png"
+    };
+    const emojis: Record<number, string> = { 1: "🪨", 2: "💧", 3: "⚡", 4: "🌿", 5: "☠️", 6: "🔮", 7: "🔥", 8: "🛡️" };
+    const embed = new EmbedBuilder().setTitle(gym.name).setDescription(`${emojis[gymId] || "🏆"} ${intro}`).setThumbnail(portraits[gymId] || "https://i.imgur.com/default.png").setColor(0x3498db);
+    await interaction.reply({ ephemeral: true, embeds: [embed] });
   } else if (parsed.scene === "Quetes" && parsed.action === "suivre") {
     const last = lastAudit(user.id, "raid_start");
     if (last && Date.now() - new Date(last.created_at).getTime() < 24 * 60 * 60 * 1000) {
@@ -315,6 +363,30 @@ async function handleButton(interaction: ButtonInteraction) {
       await msg.edit(buildBattle(discordUserId, b));
       await interaction.reply({ content: "Raid légendaire engagé", ephemeral: true });
     }
+  } else if (parsed.scene === "Quetes" && parsed.action === "recompenses") {
+    const sinceDay = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const sinceWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const dayCaptures = (db.prepare("SELECT COUNT(1) as c FROM audit WHERE user_id = ? AND action = 'capture_success' AND created_at >= ?").get(user.id, sinceDay) as { c:number }).c;
+    const weekGyms = (db.prepare("SELECT COUNT(1) as c FROM audit WHERE user_id = ? AND action = 'gym_win' AND created_at >= ?").get(user.id, sinceWeek) as { c:number }).c;
+    const noItemWin = !!lastAudit(user.id, "challenge_no_items_win");
+    const rewardsText = [];
+    if (dayCaptures >= 5) {
+      adjustInventory(user.id, 1, 3);
+      rewardsText.push("Quête quotidienne: 5 captures → Poké Ball x3");
+    } else {
+      rewardsText.push(`Captures aujourd'hui: ${dayCaptures}/5`);
+    }
+    if (weekGyms >= 1) {
+      adjustInventory(user.id, 2, 1);
+      rewardsText.push("Quête hebdo: 1 arène → Super Ball x1");
+    } else {
+      rewardsText.push(`Arènes cette semaine: ${weekGyms}/1`);
+    }
+    if (noItemWin) {
+      rewardsText.push("Défi: Arène sans objets → Titre ‘Spartiate’ débloqué");
+      setSetting(user.id, "title", "Spartiate");
+    }
+    await interaction.reply({ content: rewardsText.join("\n"), ephemeral: true });
   } else if (parsed.scene === "Battle" && parsed.action?.startsWith("atk")) {
     const battleId = Number(parsed.data);
     const idx = parsed.action === "atk1" ? 0 : parsed.action === "atk2" ? 1 : parsed.action === "atk3" ? 2 : 3;
@@ -329,9 +401,35 @@ async function handleButton(interaction: ButtonInteraction) {
         adjustInventory(user.id, 1, 2);
         const badgeId = (b.rewards && typeof (b.rewards as any).badgeId === "number") ? (b.rewards as any).badgeId as number : 1;
         awardBadge(user.id, badgeId);
+        logAudit(user.id, "gym_win", "battle", battleId, interaction.id, {}, true);
+        const usedItems = !!((b.rewards as any)?.usedItems);
+        if (!usedItems) logAudit(user.id, "challenge_no_items_win", "battle", battleId, interaction.id, {}, true);
+        const gymRow = db.prepare("SELECT difficulty FROM gyms WHERE id = ?").get((b.rewards as any).gymId) as { difficulty:number } | undefined;
+        const diff = gymRow?.difficulty || 1;
+        const ups = awardTeamExp(user.id, diff * 20);
         const icons: Record<number, string> = { 1: "https://i.imgur.com/7g1Badge.png", 2: "https://i.imgur.com/2c2Badge.png", 3: "https://i.imgur.com/3f3Badge.png", 4: "https://i.imgur.com/4p4Badge.png", 5: "https://i.imgur.com/5a5Badge.png", 6: "https://i.imgur.com/6m6Badge.png", 7: "https://i.imgur.com/7v7Badge.png", 8: "https://i.imgur.com/8t8Badge.png" };
         const embed = { embeds: [{ title: `Badge obtenu`, description: `Badge #${badgeId}`, thumbnail: { url: icons[badgeId] || "https://i.imgur.com/default.png" } }] };
         await interaction.reply({ content: `Victoire d'arène. Poké Ball x2`, ephemeral: true, ...embed });
+        if (ups.length) {
+          const upText = ups.map((u: { slot:number; before:number; after:number; name:string }) => `#${u.slot} ${u.name} ${u.before}→${u.after}`).join("\n");
+          await interaction.followUp({ ephemeral: true, content: `Level-ups:\n${upText}` });
+          const userRow2 = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+          const settings2 = getSettings(user.id);
+          const anim2 = (settings2 as any).animations !== false;
+          if (anim2 && userRow2.screen_message_id) {
+            const evoEvents = ups.map(u => {
+              const cur = db.prepare("SELECT s.name, s.id FROM pokemon_instances pi JOIN species s ON s.id = pi.species_id WHERE pi.id = ?").get(u.id) as { name:string; id:number } | undefined;
+              const evolved = cur && cur.name !== u.name;
+              return evolved ? { from: u.name, to: cur!.name, speciesId: cur!.id } : null;
+            }).filter(Boolean) as { from:string; to:string; speciesId:number }[];
+            if (evoEvents.length) {
+              const channel2 = interaction.channel as TextChannel;
+              for (const ev of evoEvents) {
+                await runEvolution(client, channel2.id, userRow2.screen_message_id, ev.from, ev.to, await imageForSpeciesId(ev.speciesId));
+              }
+            }
+          }
+        }
       } else {
         const inv = getInventory(user.id);
         const hasHyper = inv.find(i => i.item_id === 3)?.quantity || 0;
@@ -390,7 +488,9 @@ async function handleButton(interaction: ButtonInteraction) {
       adjustInventory(user.id, 10, -1);
       const p = b.participants.playerTeam[b.participants.playerActive];
       p.hp = Math.min(p.maxHp, p.hp + 20);
-      db.prepare("UPDATE battles SET participants_json = ? WHERE id = ?").run(JSON.stringify(b.participants), battleId);
+      const rewards = (b.rewards as any) || {};
+      rewards.usedItems = true;
+      db.prepare("UPDATE battles SET participants_json = ?, rewards_json = ? WHERE id = ?").run(JSON.stringify(b.participants), JSON.stringify(rewards), battleId);
       const channel = interaction.channel as TextChannel;
       const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
       const msg = await channel.messages.fetch(userRow.screen_message_id!);
@@ -422,10 +522,12 @@ async function handleButton(interaction: ButtonInteraction) {
     db.prepare("UPDATE battles SET state = ? WHERE id = ?").run("ended", battleId);
     await interaction.reply({ content: "Vous avez fui le combat", ephemeral: true });
   } else if (interaction.customId.startsWith("cap:")) {
-    const [, speciesIdStr, levelStr, ballIdStr] = interaction.customId.split(":");
+    const parts = interaction.customId.split(":");
+    const [, speciesIdStr, levelStr, ballIdStr, zoneIdStr] = parts;
     const speciesId = parseInt(speciesIdStr, 10);
     const level = parseInt(levelStr, 10);
     const ballId = parseInt(ballIdStr, 10);
+    const zoneId = zoneIdStr ? parseInt(zoneIdStr, 10) : 2;
     if (speciesId === 150) {
       const row = db.prepare("SELECT caught_count FROM pokedex WHERE owner_user_id = ? AND species_id = ?").get(user.id, 150) as { caught_count:number } | undefined;
       if (row && row.caught_count > 0) {
@@ -435,14 +537,62 @@ async function handleButton(interaction: ButtonInteraction) {
     }
     const chance = captureChance(ballId, speciesId, level);
     const success = attemptCapture(chance);
+    const evoEvents: { from:string; to:string; speciesId:number }[] = [];
     inTransaction(() => {
       adjustInventory(user.id, ballId, -1);
       if (success) {
         addPokemon(user.id, speciesId, level, false);
         addDexCaught(user.id, speciesId, false);
+        logAudit(user.id, "capture_success", "species", speciesId, interaction.id, { level }, true);
+        const gain = xpCaptureGainByZone(zoneId);
+        const ups = awardTeamExp(user.id, gain);
+        for (const u of ups) {
+          const to = checkLevelEvolution(u.species_id, u.after);
+          if (to) {
+            db.prepare("UPDATE pokemon_instances SET species_id = ? WHERE id = ?").run(to, u.id);
+            const newName = (db.prepare("SELECT name FROM species WHERE id = ?").get(to) as { name:string }).name;
+            evoEvents.push({ from: u.name, to: newName, speciesId: to });
+            const srow = db.prepare("SELECT learnset_json FROM species WHERE id = ?").get(to) as { learnset_json:string };
+            const mrow = db.prepare("SELECT moves_json, level FROM pokemon_instances WHERE id = ?").get(u.id) as { moves_json:string | null; level:number };
+            const moves = mrow.moves_json ? JSON.parse(mrow.moves_json) as string[] : [];
+            const ls = srow.learnset_json ? JSON.parse(srow.learnset_json) as { level:number; move:string }[] : [];
+            const candidate = ls.filter(e => e.level <= mrow.level && !moves.includes(e.move)).slice(-1)[0];
+            if (candidate) {
+              const next = [...moves, candidate.move].slice(-4);
+              db.prepare("UPDATE pokemon_instances SET moves_json = ? WHERE id = ?").run(JSON.stringify(next), u.id);
+            }
+          }
+        }
+        const rewards = rewardMilestones(user.id, ups.map(u => ({ before: u.before, after: u.after })));
+        const chunks: string[] = [];
+        if (ups.length) {
+          const upText = ups.map((u: { slot:number; before:number; after:number; name:string }) => `#${u.slot} ${u.name} ${u.before}→${u.after}`).join("\n");
+          chunks.push(`Level-ups:\n${upText}`);
+        }
+        if (evoEvents.length) {
+          const evosText = evoEvents.map(e => `${e.from} → ${e.to}`).join("\n");
+          chunks.push(`Évolutions:\n${evosText}`);
+        }
+        const r = [];
+        if (rewards.pokeball) r.push(`Poké Ball x${rewards.pokeball}`);
+        if (rewards.greatball) r.push(`Super Ball x${rewards.greatball}`);
+        if (rewards.ultraball) r.push(`Hyper Ball x${rewards.ultraball}`);
+        if (r.length) chunks.push(`Récompenses palier:\n${r.join(", ")}`);
+        if (chunks.length) interaction.followUp({ ephemeral: true, content: chunks.join("\n\n") });
       }
     });
     await interaction.reply({ content: success ? "Capture réussie" : "Capture échouée", ephemeral: true });
+    if (success) {
+      const userRow = findOrCreateUser(discordUserId, interaction.guildId || undefined);
+      const settings = getSettings(user.id);
+      const anim = (settings as any).animations !== false;
+      if (anim && userRow.screen_message_id) {
+        const channel = interaction.channel as TextChannel;
+        for (const ev of evoEvents) {
+          await runEvolution(client, channel.id, userRow.screen_message_id, ev.from, ev.to, await imageForSpeciesId(ev.speciesId));
+        }
+      }
+    }
   } else {
     await interaction.reply({ content: "Action non gérée", ephemeral: true });
   }
